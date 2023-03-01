@@ -12,15 +12,23 @@
 
 #include <stdio.h>
 
+enum {
+    e_do_get_request = 36,
+    e_sp_not_processed,
+    ep_sp_pkt_done
+};
+
 /* Number of Endpoints used by this app */
 #define EP_COUNT_OUT   1
 #define EP_COUNT_IN    2
+//#define EP_COUNT_IN    1
 
 /* Endpoint type tables - informs XUD what the transfer types for each Endpoint in use and also
  * if the endpoint wishes to be informed of USB bus resets
  */
 XUD_EpType epTypeTableOut[EP_COUNT_OUT] = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE };
 XUD_EpType epTypeTableIn[EP_COUNT_IN]   = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE, XUD_EPTYPE_BUL };
+//XUD_EpType epTypeTableIn[EP_COUNT_IN]   = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE};
 
 /* It is essential that HID_REPORT_BUFFER_SIZE, defined in hid_defs.h, matches the   */
 /* infered length of the report described in hidReportDescriptor above. In this case */
@@ -28,7 +36,7 @@ XUD_EpType epTypeTableIn[EP_COUNT_IN]   = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE, 
 unsigned char g_reportBuffer[HID_REPORT_BUFFER_SIZE] = {0, 0, 0};
 
 /* HID Class Requests */
-XUD_Result_t HidInterfaceClassRequests(XUD_ep c_ep0_out, XUD_ep c_ep0_in, USB_SetupPacket_t sp)
+XUD_Result_t HidInterfaceClassRequests(chanend_t chan_ep0_proxy, USB_SetupPacket_t sp)
 {
     unsigned buffer[64];
 
@@ -39,8 +47,11 @@ XUD_Result_t HidInterfaceClassRequests(XUD_ep c_ep0_out, XUD_ep c_ep0_in, USB_Se
             /* Mandatory. Allows sending of report over control pipe */
             /* Send a hid report - note the use of unsafe due to shared mem */
             buffer[0] = g_reportBuffer[0];
-            return XUD_DoGetRequest(c_ep0_out, c_ep0_in, (void*)buffer, 4, sp.wLength);
-            break;
+            chan_out_byte(chan_ep0_proxy, e_do_get_request);
+            chan_out_byte(chan_ep0_proxy, 4);
+            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)buffer, 4);
+            XUD_Result_t result = chan_in_byte(chan_ep0_proxy);
+            return result;
 
         case HID_GET_IDLE:
             /* Return the current Idle rate - optional for a HID mouse */
@@ -82,13 +93,12 @@ XUD_Result_t HidInterfaceClassRequests(XUD_ep c_ep0_out, XUD_ep c_ep0_in, USB_Se
     return XUD_RES_ERR;
 }
 
-DECLARE_JOB(Endpoint0, (chanend_t, chanend_t));
+DECLARE_JOB(Endpoint0_proxy, (chanend_t, chanend_t, chanend_t));
 /* Endpoint 0 Task */
-void Endpoint0(chanend_t chan_ep0_out, chanend_t chan_ep0_in)
+void Endpoint0_proxy(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy)
 {
     USB_SetupPacket_t sp;
 
-    unsigned bmRequestType;
     XUD_BusSpeed_t usbBusSpeed;
 
     printf("Endpoint0: out: %x\n", chan_ep0_out);
@@ -96,6 +106,8 @@ void Endpoint0(chanend_t chan_ep0_out, chanend_t chan_ep0_in)
 
     XUD_ep ep0_out = XUD_InitEp(chan_ep0_out);
     XUD_ep ep0_in  = XUD_InitEp(chan_ep0_in);
+    uint8_t cmd, len;
+    uint8_t ep0_proxy_buffer[50]; // hid report descriptor has the max size among all buffers required to sent to the host
 
     while(1)
     {
@@ -104,66 +116,24 @@ void Endpoint0(chanend_t chan_ep0_out, chanend_t chan_ep0_in)
 
         if(result == XUD_RES_OKAY)
         {
-            /* Set result to ERR, we expect it to get set to OKAY if a request is handled */
-            result = XUD_RES_ERR;
+            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
 
-            /* Stick bmRequest type back together for an easier parse... */
-            bmRequestType = (sp.bmRequestType.Direction << 7) |
-                            (sp.bmRequestType.Type << 5) |
-                            (sp.bmRequestType.Recipient);
-
-            if ((bmRequestType == USB_BMREQ_H2D_STANDARD_DEV) &&
-                (sp.bRequest == USB_SET_ADDRESS))
+            // Wait for offtile EP0 to communicate
+            while(1)
             {
-              // Host has set device address, value contained in sp.wValue
-            }
-
-            switch(bmRequestType)
-            {
-                /* Direction: Device-to-host
-                 * Type: Standard
-                 * Recipient: Interface
-                 */
-                case USB_BMREQ_D2H_STANDARD_INT:
-
-                    if(sp.bRequest == USB_GET_DESCRIPTOR)
-                    {
-                        /* HID Interface is Interface 0 */
-                        if(sp.wIndex == 0)
-                        {
-                            /* Look at Descriptor Type (high-byte of wValue) */
-                            unsigned short descriptorType = sp.wValue & 0xff00;
-
-                            switch(descriptorType)
-                            {
-                                case HID_HID:
-                                    result = XUD_DoGetRequest(ep0_out, ep0_in, hidDescriptor, sizeof(hidDescriptor), sp.wLength);
-                                    break;
-
-                                case HID_REPORT:
-                                    result = XUD_DoGetRequest(ep0_out, ep0_in, hidReportDescriptor, sizeof(hidReportDescriptor), sp.wLength);
-                                    break;
-                            }
-                        }
-                    }
+                cmd = chan_in_byte(chan_ep0_proxy);
+                if(cmd == ep_sp_pkt_done)
+                {
+                    result = chan_in_byte(chan_ep0_proxy);
                     break;
-
-                /* Direction: Device-to-host and Host-to-device
-                 * Type: Class
-                 * Recipient: Interface
-                 */
-                case USB_BMREQ_H2D_CLASS_INT:
-                case USB_BMREQ_D2H_CLASS_INT:
-
-                    /* Inspect for HID interface num */
-                    if(sp.wIndex == 0)
-                    {
-                        /* Returns  XUD_RES_OKAY if handled,
-                         *          XUD_RES_ERR if not handled,
-                         *          XUD_RES_RST for bus reset */
-                        result = HidInterfaceClassRequests(ep0_out, ep0_in, sp);
-                    }
-                    break;
+                }
+                else if(cmd == e_do_get_request)
+                {
+                    len = chan_in_byte(chan_ep0_proxy);
+                    chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
+                    result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, sp.wLength);
+                    chan_out_byte(chan_ep0_proxy, result);
+                }
             }
         }
 
@@ -175,7 +145,6 @@ void Endpoint0(chanend_t chan_ep0_out, chanend_t chan_ep0_in)
              *          XUD_RES_RST for USB Reset */
 
             hwtimer_realloc_xc_timer(); // realocate logical core xC hw timer
-
             result = USB_StandardRequests(ep0_out, ep0_in, devDesc,
                         sizeof(devDesc), cfgDesc, sizeof(cfgDesc),
                         NULL, 0, NULL, 0, stringDescriptors, sizeof(stringDescriptors)/sizeof(stringDescriptors[0]),
@@ -187,6 +156,7 @@ void Endpoint0(chanend_t chan_ep0_out, chanend_t chan_ep0_in)
         /* USB bus reset detected, reset EP and get new bus speed */
         if(result == XUD_RES_RST)
         {
+            //printintln(1111);
             usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
         }
     }
@@ -211,8 +181,8 @@ void hid_mouse(chanend_t chan_ep_hid)
         /* Move the pointer around in a square (relative) */
         if(counter++ >= 500)
         {
-            int x;
-            int y;
+            int x=0;
+            int y=0;
 
             switch(state) {
             case RIGHT:
@@ -266,10 +236,97 @@ void _XUD_Main(chanend_t *c_epOut, int noEpOut, chanend_t *c_epIn, int noEpIn, c
         epTypeTableOut, epTypeTableIn, desiredSpeed, pwrConfig);
 }
 
-int main()
+DECLARE_JOB(Endpoint0_offtile, (chanend_t));
+void Endpoint0_offtile(chanend_t chan_ep0_proxy)
+{
+    USB_SetupPacket_t sp;
+    unsigned bmRequestType;
+    while(1)
+    {
+        //token = chan_in_byte(chan_ep0_proxy);
+        chan_in_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
+
+        /* Set result to ERR, we expect it to get set to OKAY if a request is handled */
+        XUD_Result_t result = XUD_RES_ERR;
+
+        /* Stick bmRequest type back together for an easier parse... */
+        bmRequestType = (sp.bmRequestType.Direction << 7) |
+                        (sp.bmRequestType.Type << 5) |
+                        (sp.bmRequestType.Recipient);
+
+        if ((bmRequestType == USB_BMREQ_H2D_STANDARD_DEV) &&
+            (sp.bRequest == USB_SET_ADDRESS))
+        {
+            // Host has set device address, value contained in sp.wValue
+        }
+
+        switch(bmRequestType)
+        {
+            /* Direction: Device-to-host
+                * Type: Standard
+                * Recipient: Interface
+                */
+            case USB_BMREQ_D2H_STANDARD_INT:
+
+                if(sp.bRequest == USB_GET_DESCRIPTOR)
+                {
+                    /* HID Interface is Interface 0 */
+                    if(sp.wIndex == 0)
+                    {
+                        /* Look at Descriptor Type (high-byte of wValue) */
+                        unsigned short descriptorType = sp.wValue & 0xff00;
+
+                        switch(descriptorType)
+                        {
+                            case HID_HID:
+                                chan_out_byte(chan_ep0_proxy, e_do_get_request);
+                                chan_out_byte(chan_ep0_proxy, sizeof(hidDescriptor));
+                                chan_out_buf_byte(chan_ep0_proxy, hidDescriptor, sizeof(hidDescriptor));
+                                result = chan_in_byte(chan_ep0_proxy);
+                                break;
+
+                            case HID_REPORT:
+                                chan_out_byte(chan_ep0_proxy, e_do_get_request);
+                                chan_out_byte(chan_ep0_proxy, sizeof(hidReportDescriptor));
+                                chan_out_buf_byte(chan_ep0_proxy, hidReportDescriptor, sizeof(hidReportDescriptor));
+                                result = chan_in_byte(chan_ep0_proxy);
+                                break;
+                        }
+                    }
+                }
+                break;
+            /* Direction: Device-to-host and Host-to-device
+                 * Type: Class
+                 * Recipient: Interface
+                 */
+            case USB_BMREQ_H2D_CLASS_INT:
+            case USB_BMREQ_D2H_CLASS_INT:
+
+                /* Inspect for HID interface num */
+                if(sp.wIndex == 0)
+                {
+                    /* Returns  XUD_RES_OKAY if handled,
+                        *          XUD_RES_ERR if not handled,
+                        *          XUD_RES_RST for bus reset */
+                    result = HidInterfaceClassRequests(chan_ep0_proxy, sp);
+                }
+                break;
+        }
+        chan_out_byte(chan_ep0_proxy, ep_sp_pkt_done);
+        chan_out_byte(chan_ep0_proxy, result);
+    }
+
+}
+
+int main_tile0(chanend_t c_intertile)
 {
     channel_t channel_ep_out[EP_COUNT_OUT];
     channel_t channel_ep_in[EP_COUNT_IN];
+
+    chanend_t c_ep0_proxy;
+    c_ep0_proxy = chanend_alloc();
+    chanend_set_dest(c_ep0_proxy, chan_in_word(c_intertile));
+    chan_out_word(c_intertile, c_ep0_proxy);
 
     for(int i = 0; i < sizeof(channel_ep_out) / sizeof(*channel_ep_out); ++i) {
         channel_ep_out[i] = chan_alloc();
@@ -290,8 +347,21 @@ int main()
 
     PAR_JOBS(
         PJOB(_XUD_Main, (c_ep_out, EP_COUNT_OUT, c_ep_in, EP_COUNT_IN, 0, epTypeTableOut, epTypeTableIn, XUD_SPEED_HS, XUD_PWR_BUS)),
-        PJOB(Endpoint0, (channel_ep_out[0].end_b, channel_ep_in[0].end_b)),
+        PJOB(Endpoint0_proxy, (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
         PJOB(hid_mouse, (channel_ep_in[1].end_b))
+    );
+
+    return 0;
+}
+
+int main_tile1(chanend_t c_intertile)
+{
+    chanend_t c_ep0_proxy;
+    c_ep0_proxy = chanend_alloc();
+    chan_out_word(c_intertile, c_ep0_proxy);
+    chanend_set_dest(c_ep0_proxy, chan_in_word(c_intertile));
+    PAR_JOBS(
+        PJOB(Endpoint0_offtile, (c_ep0_proxy))
     );
 
     return 0;

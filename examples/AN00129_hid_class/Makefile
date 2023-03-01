@@ -29,14 +29,16 @@ USED_MODULES = lib_xud
 # In this case, the target depends on the build configuration.
 ifeq ($(CONFIG),AI)
 TARGET = XCORE-AI-EXPLORER
-EXCLUDE_FILES = main.c
+EXCLUDE_FILES = main.c \
+				toplevel.xc
 else ifeq ($(CONFIG),AI_C)
 TARGET = XCORE-AI-EXPLORER
 EXCLUDE_FILES = main.xc \
 				endpoint0.xc
 else
 TARGET = XCORE-200-EXPLORER
-EXCLUDE_FILES = main.c
+EXCLUDE_FILES = main.c \
+				toplevel.xc
 endif
 #=============================================================================
 # The following part of the Makefile includes the common build infrastructure
