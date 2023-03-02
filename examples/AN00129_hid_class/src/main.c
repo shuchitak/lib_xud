@@ -264,10 +264,8 @@ void Endpoint0_offtile(chanend_t chan_ep0_proxy)
     XUD_BusSpeed_t usbBusSpeed;
     while(1)
     {
-        //token = chan_in_byte(chan_ep0_proxy);
         chan_in_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
         
-
         /* Set result to ERR, we expect it to get set to OKAY if a request is handled */
         XUD_Result_t result = chan_in_word(chan_ep0_proxy);
 
