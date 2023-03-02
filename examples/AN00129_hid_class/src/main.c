@@ -11,7 +11,7 @@
 #include "hid.h"
 
 #include <stdio.h>
-#include "ep0_proxy.h"
+#include "ep0_offtile_helpers.h"
 
 
 /* Number of Endpoints used by this app */

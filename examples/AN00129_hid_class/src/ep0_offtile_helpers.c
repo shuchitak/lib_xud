@@ -1,6 +1,6 @@
 #include <xcore/chanend.h>
 #include <xcore/channel.h>
-#include "ep0_proxy.h"
+#include "ep0_offtile_helpers.h"
 
 /** Functions the off tile EP0 uses to communicate with the EP0 proxy running on the same tile as USB */
 

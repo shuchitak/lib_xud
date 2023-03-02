@@ -31,7 +31,7 @@ ifeq ($(CONFIG),AI)
 TARGET = XCORE-AI-EXPLORER
 EXCLUDE_FILES = main.c \
 				toplevel.xc \
-				ep0_proxy_functions.c
+				ep0_offtile_helpers.c
 else ifeq ($(CONFIG),AI_C)
 TARGET = XCORE-AI-EXPLORER
 EXCLUDE_FILES = main.xc \
@@ -40,7 +40,7 @@ else
 TARGET = XCORE-200-EXPLORER
 EXCLUDE_FILES = main.c \
 				toplevel.xc \
-				ep0_proxy_functions.c
+				ep0_offtile_helpers.c
 endif
 #=============================================================================
 # The following part of the Makefile includes the common build infrastructure

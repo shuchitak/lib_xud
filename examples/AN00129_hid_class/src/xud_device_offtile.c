@@ -12,7 +12,7 @@
 
 #include <string.h>
 
-#include "ep0_proxy.h"
+#include "ep0_offtile_helpers.h"
 
 #ifndef MAX_INTS
 /* Maximum number of interfaces supported */
