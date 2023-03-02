@@ -208,7 +208,7 @@ XUD_Result_t USB_StandardRequests(XUD_ep ep_out, XUD_ep ep_in,
                                 if((result = XUD_DoSetRequestStatus(ep_in)) != XUD_RES_OKAY)
                                     return result;
 
-                                //XUD_SetTestMode(ep_out, sp.wIndex); // TODO fix later!
+                                XUD_SetTestMode(ep_out, sp.wIndex);
                             }
                             break;
                         }

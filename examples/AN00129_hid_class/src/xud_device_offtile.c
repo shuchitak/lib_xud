@@ -194,7 +194,8 @@ XUD_Result_t USB_StandardRequests_offtile(chanend_t chan_ep0_proxy,
                                     return result;
                                 }
 
-                                //XUD_SetTestMode(ep_out, sp->wIndex); // TODO fix later!
+                                //XUD_SetTestMode(ep_out, sp->wIndex);
+                                offtile_set_test_mode(chan_ep0_proxy, sp->wIndex);
                             }
                             break;
                         }

@@ -168,6 +168,12 @@ void Endpoint0_proxy(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t ch
                 usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
                 chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
             }
+            else if(cmd == e_set_test_mode)
+            {
+                unsigned test_mode = chan_in_word(chan_ep0_proxy);
+                XUD_SetTestMode(ep0_out, test_mode);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
             else if(e_sp_not_processed)
             {
 

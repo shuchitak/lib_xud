@@ -63,6 +63,13 @@ uint8_t offtile_reset_endpoint(chanend_t chan_ep0_proxy)
     return usb_bus_speed;
 }
 
+void offtile_set_test_mode(chanend_t chan_ep0_proxy, unsigned test_mode)
+{
+    chan_out_byte(chan_ep0_proxy, e_set_test_mode);
+    chan_out_word(chan_ep0_proxy, test_mode);
+    XUD_Result_t result = chan_in_byte(chan_ep0_proxy); // Block to ensure operation completed on the XUD tile
+}
+
 
 
 
