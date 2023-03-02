@@ -17,14 +17,12 @@
 /* Number of Endpoints used by this app */
 #define EP_COUNT_OUT   1
 #define EP_COUNT_IN    2
-//#define EP_COUNT_IN    1
 
 /* Endpoint type tables - informs XUD what the transfer types for each Endpoint in use and also
  * if the endpoint wishes to be informed of USB bus resets
  */
 XUD_EpType epTypeTableOut[EP_COUNT_OUT] = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE };
 XUD_EpType epTypeTableIn[EP_COUNT_IN]   = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE, XUD_EPTYPE_BUL };
-//XUD_EpType epTypeTableIn[EP_COUNT_IN]   = { XUD_EPTYPE_CTL | XUD_STATUS_ENABLE};
 
 /* It is essential that HID_REPORT_BUFFER_SIZE, defined in hid_defs.h, matches the   */
 /* infered length of the report described in hidReportDescriptor above. In this case */
@@ -86,6 +84,8 @@ XUD_Result_t HidInterfaceClassRequests(chanend_t chan_ep0_proxy, USB_SetupPacket
     return XUD_RES_ERR;
 }
 
+extern void XUD_HAL_SetDeviceAddress(unsigned char address);
+
 DECLARE_JOB(Endpoint0_proxy, (chanend_t, chanend_t, chanend_t));
 /* Endpoint 0 Task */
 void Endpoint0_proxy(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy)
@@ -100,57 +100,78 @@ void Endpoint0_proxy(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t ch
     XUD_ep ep0_out = XUD_InitEp(chan_ep0_out);
     XUD_ep ep0_in  = XUD_InitEp(chan_ep0_in);
     uint8_t cmd, len;
-    uint8_t ep0_proxy_buffer[50]; // hid report descriptor has the max size among all buffers required to sent to the host
+    // Hard code to a safe number for now
+    uint8_t ep0_proxy_buffer[1024]; // TODO This has to be the max of all possible buffer lengths the offtile EP0 might want to write.
 
     while(1)
     {
         /* Returns XUD_RES_OKAY on success */
         XUD_Result_t result = USB_GetSetupPacket(ep0_out, ep0_in, &sp);
 
-        if(result == XUD_RES_OKAY)
-        {
-            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
+        chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
+        chan_out_word(chan_ep0_proxy, result);
 
-            // Wait for offtile EP0 to communicate
-            while(1)
+
+        // Wait for offtile EP0 to communicate
+        while(1)
+        {
+            cmd = chan_in_byte(chan_ep0_proxy);
+            if(cmd == ep_sp_pkt_done)
             {
-                cmd = chan_in_byte(chan_ep0_proxy);
-                if(cmd == ep_sp_pkt_done)
-                {
-                    result = chan_in_byte(chan_ep0_proxy);
-                    break;
-                }
-                else if(cmd == e_do_get_request)
-                {
-                    len = chan_in_byte(chan_ep0_proxy);
-                    chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
-                    result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, sp.wLength);
-                    chan_out_byte(chan_ep0_proxy, result);
-                }
+                result = chan_in_byte(chan_ep0_proxy);
+                break;
             }
-        }
+            else if(cmd == e_do_get_request)
+            {
+                len = chan_in_byte(chan_ep0_proxy);
+                chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
+                result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, sp.wLength);
+                chan_out_byte(chan_ep0_proxy, result);
+            }
+            else if(cmd == e_set_req_status)
+            {
+                result = XUD_DoSetRequestStatus(ep0_in);
+                chan_out_byte(chan_ep0_proxy, result);
+            }
+            else if(cmd == e_set_stall_by_addr)
+            {
+                int ep_addr = chan_in_word(chan_ep0_proxy);
+                XUD_SetStallByAddr(ep_addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_clear_stall_by_addr)
+            {
+                int ep_addr = chan_in_word(chan_ep0_proxy);
+                XUD_ClearStallByAddr(ep_addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_hal_set_device_addr)
+            {
+                int8_t addr = chan_in_byte(chan_ep0_proxy);
+                XUD_HAL_SetDeviceAddress(addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_reset_ep_state_by_addr)
+            {
+                unsigned int ep_addr = (unsigned int)chan_in_byte(chan_ep0_proxy);
+                XUD_ResetEpStateByAddr(ep_addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_set_stall)
+            {
+                XUD_SetStall(ep0_out);
+                XUD_SetStall(ep0_in);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_reset_endpoint)
+            {
+                usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+                chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
+            }
+            else if(e_sp_not_processed)
+            {
 
-        /* If we haven't handled the request about then do standard enumeration requests */
-        if(result == XUD_RES_ERR )
-        {
-            /* Returns  XUD_RES_OKAY if handled okay,
-             *          XUD_RES_ERR if request was not handled (STALLed),
-             *          XUD_RES_RST for USB Reset */
-
-            hwtimer_realloc_xc_timer(); // realocate logical core xC hw timer
-            result = USB_StandardRequests(ep0_out, ep0_in, devDesc,
-                        sizeof(devDesc), cfgDesc, sizeof(cfgDesc),
-                        NULL, 0, NULL, 0, stringDescriptors, sizeof(stringDescriptors)/sizeof(stringDescriptors[0]),
-                        &sp, usbBusSpeed);
-
-            hwtimer_free_xc_timer();    // free timer
-        }
-
-        /* USB bus reset detected, reset EP and get new bus speed */
-        if(result == XUD_RES_RST)
-        {
-            //printintln(1111);
-            usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+            }
         }
     }
 }
@@ -234,71 +255,101 @@ void Endpoint0_offtile(chanend_t chan_ep0_proxy)
 {
     USB_SetupPacket_t sp;
     unsigned bmRequestType;
+    XUD_BusSpeed_t usbBusSpeed;
     while(1)
     {
         //token = chan_in_byte(chan_ep0_proxy);
         chan_in_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
+        
 
         /* Set result to ERR, we expect it to get set to OKAY if a request is handled */
-        XUD_Result_t result = XUD_RES_ERR;
+        XUD_Result_t result = chan_in_word(chan_ep0_proxy);
 
-        /* Stick bmRequest type back together for an easier parse... */
-        bmRequestType = (sp.bmRequestType.Direction << 7) |
-                        (sp.bmRequestType.Type << 5) |
-                        (sp.bmRequestType.Recipient);
-
-        if ((bmRequestType == USB_BMREQ_H2D_STANDARD_DEV) &&
-            (sp.bRequest == USB_SET_ADDRESS))
+        if(result == XUD_RES_OKAY)
         {
-            // Host has set device address, value contained in sp.wValue
-        }
+            /* Set result to ERR, we expect it to get set to OKAY if a request is handled */
+            result = XUD_RES_ERR;
 
-        switch(bmRequestType)
-        {
-            /* Direction: Device-to-host
-                * Type: Standard
-                * Recipient: Interface
-                */
-            case USB_BMREQ_D2H_STANDARD_INT:
+            /* Stick bmRequest type back together for an easier parse... */
+            bmRequestType = (sp.bmRequestType.Direction << 7) |
+                            (sp.bmRequestType.Type << 5) |
+                            (sp.bmRequestType.Recipient);
 
-                if(sp.bRequest == USB_GET_DESCRIPTOR)
-                {
-                    /* HID Interface is Interface 0 */
-                    if(sp.wIndex == 0)
+            if ((bmRequestType == USB_BMREQ_H2D_STANDARD_DEV) &&
+                (sp.bRequest == USB_SET_ADDRESS))
+            {
+                // Host has set device address, value contained in sp.wValue
+            }
+
+            switch(bmRequestType)
+            {
+                /* Direction: Device-to-host
+                    * Type: Standard
+                    * Recipient: Interface
+                    */
+                case USB_BMREQ_D2H_STANDARD_INT:
+                    if(sp.bRequest == USB_GET_DESCRIPTOR)
                     {
-                        /* Look at Descriptor Type (high-byte of wValue) */
-                        unsigned short descriptorType = sp.wValue & 0xff00;
-
-                        switch(descriptorType)
+                        /* HID Interface is Interface 0 */
+                        if(sp.wIndex == 0)
                         {
-                            case HID_HID:
-                                result = offtile_do_get_request(chan_ep0_proxy, hidDescriptor, sizeof(hidDescriptor));                                
-                                break;
+                            /* Look at Descriptor Type (high-byte of wValue) */
+                            unsigned short descriptorType = sp.wValue & 0xff00;
 
-                            case HID_REPORT:
-                                result = offtile_do_get_request(chan_ep0_proxy, hidReportDescriptor, sizeof(hidReportDescriptor));
-                                break;
+                            switch(descriptorType)
+                            {
+                                case HID_HID:
+                                    result = offtile_do_get_request(chan_ep0_proxy, hidDescriptor, sizeof(hidDescriptor));                                
+                                    break;
+
+                                case HID_REPORT:
+                                    result = offtile_do_get_request(chan_ep0_proxy, hidReportDescriptor, sizeof(hidReportDescriptor));
+                                    break;
+                            }
                         }
                     }
-                }
-                break;
-            /* Direction: Device-to-host and Host-to-device
-                 * Type: Class
-                 * Recipient: Interface
-                 */
-            case USB_BMREQ_H2D_CLASS_INT:
-            case USB_BMREQ_D2H_CLASS_INT:
-
-                /* Inspect for HID interface num */
-                if(sp.wIndex == 0)
-                {
-                    /* Returns  XUD_RES_OKAY if handled,
-                        *          XUD_RES_ERR if not handled,
-                        *          XUD_RES_RST for bus reset */
-                    result = HidInterfaceClassRequests(chan_ep0_proxy, sp);
-                }
-                break;
+                    break;
+                /* Direction: Device-to-host and Host-to-device
+                    * Type: Class
+                    * Recipient: Interface
+                    */
+                case USB_BMREQ_H2D_CLASS_INT:
+                case USB_BMREQ_D2H_CLASS_INT:
+                    /* Inspect for HID interface num */
+                    if(sp.wIndex == 0)
+                    {
+                        /* Returns  XUD_RES_OKAY if handled,
+                            *          XUD_RES_ERR if not handled,
+                            *          XUD_RES_RST for bus reset */
+                        result = HidInterfaceClassRequests(chan_ep0_proxy, sp);
+                    }
+                    break;
+            }
         }
+
+        /* If we haven't handled the request about then do standard enumeration requests */
+        if(result == XUD_RES_ERR )
+        {
+            /* Returns  XUD_RES_OKAY if handled okay,
+             *          XUD_RES_ERR if request was not handled (STALLed),
+             *          XUD_RES_RST for USB Reset */
+
+            //hwtimer_realloc_xc_timer(); // realocate logical core xC hw timer
+            result = USB_StandardRequests_offtile(chan_ep0_proxy, devDesc,
+                        sizeof(devDesc), cfgDesc, sizeof(cfgDesc),
+                        NULL, 0, NULL, 0, stringDescriptors, sizeof(stringDescriptors)/sizeof(stringDescriptors[0]),
+                        &sp, usbBusSpeed);
+
+            //hwtimer_free_xc_timer();    // free timer
+        }
+
+        /* USB bus reset detected, reset EP and get new bus speed */
+        if(result == XUD_RES_RST)
+        {
+            //usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+            usbBusSpeed = offtile_reset_endpoint(chan_ep0_proxy);
+        }
+
         chan_out_byte(chan_ep0_proxy, ep_sp_pkt_done);
         chan_out_byte(chan_ep0_proxy, result);
     }
