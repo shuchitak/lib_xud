@@ -11,12 +11,8 @@
 #include "hid.h"
 
 #include <stdio.h>
+#include "ep0_proxy.h"
 
-enum {
-    e_do_get_request = 36,
-    e_sp_not_processed,
-    ep_sp_pkt_done
-};
 
 /* Number of Endpoints used by this app */
 #define EP_COUNT_OUT   1
@@ -47,10 +43,7 @@ XUD_Result_t HidInterfaceClassRequests(chanend_t chan_ep0_proxy, USB_SetupPacket
             /* Mandatory. Allows sending of report over control pipe */
             /* Send a hid report - note the use of unsafe due to shared mem */
             buffer[0] = g_reportBuffer[0];
-            chan_out_byte(chan_ep0_proxy, e_do_get_request);
-            chan_out_byte(chan_ep0_proxy, 4);
-            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)buffer, 4);
-            XUD_Result_t result = chan_in_byte(chan_ep0_proxy);
+            XUD_Result_t result = offtile_do_get_request(chan_ep0_proxy, (uint8_t*)buffer, 4);
             return result;
 
         case HID_GET_IDLE:
@@ -279,17 +272,11 @@ void Endpoint0_offtile(chanend_t chan_ep0_proxy)
                         switch(descriptorType)
                         {
                             case HID_HID:
-                                chan_out_byte(chan_ep0_proxy, e_do_get_request);
-                                chan_out_byte(chan_ep0_proxy, sizeof(hidDescriptor));
-                                chan_out_buf_byte(chan_ep0_proxy, hidDescriptor, sizeof(hidDescriptor));
-                                result = chan_in_byte(chan_ep0_proxy);
+                                result = offtile_do_get_request(chan_ep0_proxy, hidDescriptor, sizeof(hidDescriptor));                                
                                 break;
 
                             case HID_REPORT:
-                                chan_out_byte(chan_ep0_proxy, e_do_get_request);
-                                chan_out_byte(chan_ep0_proxy, sizeof(hidReportDescriptor));
-                                chan_out_buf_byte(chan_ep0_proxy, hidReportDescriptor, sizeof(hidReportDescriptor));
-                                result = chan_in_byte(chan_ep0_proxy);
+                                result = offtile_do_get_request(chan_ep0_proxy, hidReportDescriptor, sizeof(hidReportDescriptor));
                                 break;
                         }
                     }
