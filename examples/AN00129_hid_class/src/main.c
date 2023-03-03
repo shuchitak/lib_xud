@@ -5,7 +5,13 @@
 #include <xcore/chanend.h>
 #include <xcore/channel.h>
 #include <xcore/hwtimer.h>
+#include <xcore/interrupt_wrappers.h>
+#include <xcore/interrupt.h>
+#include <xcore/triggerable.h>
+#include <xcore/lock.h>
 
+#include <xcore/hwtimer.h>
+#include <xcore/select.h>
 #include <xud_device.h>
 #include "hid_defs.h"
 #include "hid.h"
@@ -360,6 +366,79 @@ void Endpoint0_offtile(chanend_t chan_ep0_proxy)
 
 }
 
+typedef struct isr_data_t {    
+    chanend_t c_test_int;
+    uint8_t trigger_enabled;
+} isr_data_t;
+
+isr_data_t app_data;
+
+DEFINE_INTERRUPT_CALLBACK(ep0_isr_grp, ep0_setup_packet_isr, app_data)
+{
+    isr_data_t *isr_data = app_data;
+    triggerable_disable_trigger(isr_data->c_test_int);
+    uint8_t temp = chan_in_byte(isr_data->c_test_int);
+    //printstrln("***in ep0_setup_packet_isr***");
+    //printintln(temp);
+    chan_out_byte(isr_data->c_test_int, 100);
+    isr_data->trigger_enabled = 0;
+}
+
+DECLARE_JOB(INTERRUPT_PERMITTED(Interrupt_permitted_task), (chanend_t));
+DEFINE_INTERRUPT_PERMITTED (ep0_isr_grp, void, Interrupt_permitted_task, chanend_t c_interrupt)
+{
+    app_data.c_test_int = c_interrupt;
+    app_data.trigger_enabled = 1;
+    triggerable_setup_interrupt_callback(c_interrupt, &app_data, INTERRUPT_CALLBACK(ep0_setup_packet_isr));
+    triggerable_enable_trigger(c_interrupt);
+    interrupt_unmask_all();
+    lock_t l = lock_alloc();
+    while(1)
+    {
+        //printintln(app_data.trigger_enabled);
+        lock_acquire(l);
+        if(!app_data.trigger_enabled)
+        {  
+            //printstrln("Found interrupt disabled");        
+            app_data.trigger_enabled = 1;
+            //printstrln("Enabling interrupt again");
+            //triggerable_setup_interrupt_callback(c_interrupt, &app_data, INTERRUPT_CALLBACK(ep0_setup_packet_isr));
+            triggerable_enable_trigger(c_interrupt);
+        }
+        lock_release(l);
+
+    }
+    return;
+}
+
+DECLARE_JOB(interrupt_trigger_task, (chanend_t))
+void interrupt_trigger_task(chanend_t c_test_interrupt)
+{
+    hwtimer_t t = hwtimer_alloc();
+    unsigned long now = hwtimer_get_time(t);
+
+    hwtimer_set_trigger_time(t,
+        now + 10000000);
+
+    SELECT_RES(
+        CASE_THEN(t, timer_handler))
+    {
+        timer_handler:
+            now = hwtimer_get_time(t);
+            hwtimer_change_trigger_time(t,
+            now + 10000000);
+            //printf("Timer handler at time: %lu\n", now);
+            chan_out_byte(c_test_interrupt, 44);
+            //printstrln("here 1");
+            uint8_t temp = chan_in_byte(c_test_interrupt);
+            //printstrln("here 2");
+            //printintln(temp);
+            continue;
+    }
+
+  hwtimer_free(t);
+}
+
 int main_tile0(chanend_t c_intertile)
 {
     channel_t channel_ep_out[EP_COUNT_OUT];
@@ -369,6 +448,11 @@ int main_tile0(chanend_t c_intertile)
     c_ep0_proxy = chanend_alloc();
     chanend_set_dest(c_ep0_proxy, chan_in_word(c_intertile));
     chan_out_word(c_intertile, c_ep0_proxy);
+
+    chanend_t c_test_interrupt;
+    c_test_interrupt = chanend_alloc();
+    chanend_set_dest(c_test_interrupt, chan_in_word(c_intertile));
+    chan_out_word(c_intertile, c_test_interrupt);
 
     for(int i = 0; i < sizeof(channel_ep_out) / sizeof(*channel_ep_out); ++i) {
         channel_ep_out[i] = chan_alloc();
@@ -390,7 +474,8 @@ int main_tile0(chanend_t c_intertile)
     PAR_JOBS(
         PJOB(_XUD_Main, (c_ep_out, EP_COUNT_OUT, c_ep_in, EP_COUNT_IN, 0, epTypeTableOut, epTypeTableIn, XUD_SPEED_HS, XUD_PWR_BUS)),
         PJOB(Endpoint0_proxy, (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
-        PJOB(hid_mouse, (channel_ep_in[1].end_b))
+        PJOB(hid_mouse, (channel_ep_in[1].end_b)),
+        PJOB(interrupt_trigger_task, (c_test_interrupt))
     );
 
     return 0;
@@ -402,8 +487,15 @@ int main_tile1(chanend_t c_intertile)
     c_ep0_proxy = chanend_alloc();
     chan_out_word(c_intertile, c_ep0_proxy);
     chanend_set_dest(c_ep0_proxy, chan_in_word(c_intertile));
+
+    chanend_t c_test_interrupt;
+    c_test_interrupt = chanend_alloc();
+    chan_out_word(c_intertile, c_test_interrupt);
+    chanend_set_dest(c_test_interrupt, chan_in_word(c_intertile));
+
     PAR_JOBS(
-        PJOB(Endpoint0_offtile, (c_ep0_proxy))
+        PJOB(Endpoint0_offtile, (c_ep0_proxy)),
+        PJOB(INTERRUPT_PERMITTED(Interrupt_permitted_task), (c_test_interrupt))
     );
 
     return 0;
