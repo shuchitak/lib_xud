@@ -92,9 +92,10 @@ XUD_Result_t HidInterfaceClassRequests(chanend_t chan_ep0_proxy, USB_SetupPacket
 
 extern void XUD_HAL_SetDeviceAddress(unsigned char address);
 
-DECLARE_JOB(Endpoint0_proxy, (chanend_t, chanend_t, chanend_t));
+
+DECLARE_JOB(Endpoint0_proxy_no_isr, (chanend_t, chanend_t, chanend_t));
 /* Endpoint 0 Task */
-void Endpoint0_proxy(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy)
+void Endpoint0_proxy_no_isr(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy)
 {
     USB_SetupPacket_t sp;
 
@@ -188,6 +189,216 @@ void Endpoint0_proxy(chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t ch
     }
 }
 
+XUD_Result_t XUD_GetSetupBuffer_quick(XUD_ep e)
+{
+    volatile XUD_ep_info *ep = (XUD_ep_info*) e;
+    unsigned isReset;
+    unsigned length;
+    unsigned lengthTail;
+    
+    /* Wait for XUD response */
+    asm volatile("testct %0, res[%1]" : "=r"(isReset) : "r"(ep->client_chanend));
+
+    if(isReset)
+    {
+        return XUD_RES_RST;
+    }
+    
+    /* Input packet length (words) */
+    asm volatile("in %0, res[%1]" : "=r"(length) : "r"(ep->client_chanend));
+   
+    /* Input tail length (bytes) */ 
+    /* TODO Check CT vs T */
+    asm volatile("inct %0, res[%1]" : "=r"(lengthTail) : "r"(ep->client_chanend));
+
+    /* Reset PID toggling on receipt of SETUP (both IN and OUT) */
+#ifdef __XS2A__
+    ep->pid = USB_PID_DATA1;
+#else
+    ep->pid = USB_PIDn_DATA1;
+#endif
+
+    /* Reset IN EP PID */
+    XUD_ep_info *ep_in = (XUD_ep_info*) ((unsigned)ep + (USB_MAX_NUM_EP_OUT * sizeof(XUD_ep_info)));
+    ep_in->pid = USB_PIDn_DATA1;
+
+    return XUD_RES_OKAY;
+}
+
+typedef struct {
+    chanend_t chan_ep0_out;
+    chanend_t chan_ep0_in;
+    chanend_t c_notify;
+    uint8_t trigger_enabled;
+    uint8_t setup_pkt_received;
+    USB_SetupPacket_t sp;
+    XUD_Result_t result;
+    XUD_ep ep0_out;
+    XUD_ep ep0_in;
+    XUD_BusSpeed_t usbBusSpeed;
+} ep0_isr_data_t;
+
+ep0_isr_data_t ep0_app_data;
+
+DEFINE_INTERRUPT_CALLBACK(test_isr_grp, test_ep0_isr, app_data)
+{
+    ep0_isr_data_t *isr_data = app_data;
+    triggerable_disable_trigger(isr_data->chan_ep0_out);
+
+    isr_data->result = XUD_GetSetupBuffer_quick(isr_data->ep0_out);
+    if(isr_data->result != XUD_RES_OKAY)
+    {
+        s_chan_out_byte(isr_data->c_notify, 1);
+    }
+    else{
+        volatile XUD_ep_info *ep = (XUD_ep_info*) isr_data->ep0_out;
+        USB_ParseSetupPacket(ep->buffer, &isr_data->sp);
+        s_chan_out_byte(isr_data->c_notify, 1);
+    }
+}
+
+DECLARE_JOB(INTERRUPT_PERMITTED(Endpoint0_proxy_isr), (chanend_t, chanend_t, chanend_t));
+DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy)
+/* Endpoint 0 Task */
+{
+    ep0_app_data.chan_ep0_out = chan_ep0_out;
+    ep0_app_data.chan_ep0_in = chan_ep0_in;
+    ep0_app_data.trigger_enabled = 1;
+    ep0_app_data.setup_pkt_received = 0;
+
+    streaming_channel_t c_notify;
+    c_notify = chan_alloc();
+    ep0_app_data.c_notify = c_notify.end_a;
+
+    triggerable_setup_interrupt_callback(chan_ep0_out, &ep0_app_data, INTERRUPT_CALLBACK(test_ep0_isr));
+    //USB_SetupPacket_t sp;
+
+    XUD_BusSpeed_t usbBusSpeed;
+
+    printf("Endpoint0: out: %x\n", chan_ep0_out);
+    printf("Endpoint0: in:  %x\n", chan_ep0_in);
+
+    XUD_ep ep0_out = XUD_InitEp(chan_ep0_out);
+    XUD_ep ep0_in  = XUD_InitEp(chan_ep0_in);
+    uint8_t cmd, len;
+    // Hard code to a safe number for now
+    uint8_t ep0_proxy_buffer[1024]; // TODO This has to be the max of all possible buffer lengths the offtile EP0 might want to write.
+
+    ep0_app_data.ep0_out = ep0_out;
+    ep0_app_data.ep0_in = ep0_in;
+
+    unsigned char sbuffer[120];
+
+    volatile XUD_ep_info *ep = (XUD_ep_info*) ep0_app_data.ep0_out;
+    if(ep->resetting)
+    {
+        usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+    }
+
+    /* Store buffer address in EP structure */
+    ep->buffer = &sbuffer[0];
+    /* Mark EP as ready for SETUP data */
+    unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
+    *array_ptr_setup = (unsigned) ep;
+
+    triggerable_enable_trigger(chan_ep0_out);
+    interrupt_unmask_all();
+
+    SELECT_RES(
+        CASE_THEN(c_notify.end_b, event_setup_notify)
+    )
+    {
+        event_setup_notify:
+        {
+            uint8_t temp = s_chan_in_byte(c_notify.end_b);
+            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&ep0_app_data.sp, sizeof(USB_SetupPacket_t));
+            chan_out_word(chan_ep0_proxy, ep0_app_data.result);
+            // Wait for offtile EP0 to communicate
+            while(1)
+            {
+                XUD_Result_t result;
+                cmd = chan_in_byte(chan_ep0_proxy);
+                if(cmd == ep_sp_pkt_done)
+                {
+                    result = chan_in_byte(chan_ep0_proxy);
+                    break;
+                }
+                else if(cmd == e_do_get_request)
+                {
+                    len = chan_in_byte(chan_ep0_proxy);
+                    chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
+                    result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, ep0_app_data.sp.wLength);
+                    chan_out_byte(chan_ep0_proxy, result);
+                }
+                else if(cmd == e_set_req_status)
+                {
+                    result = XUD_DoSetRequestStatus(ep0_in);
+                    chan_out_byte(chan_ep0_proxy, result);
+                }
+                else if(cmd == e_set_stall_by_addr)
+                {
+                    int ep_addr = chan_in_word(chan_ep0_proxy);
+                    XUD_SetStallByAddr(ep_addr);
+                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                }
+                else if(cmd == e_clear_stall_by_addr)
+                {
+                    int ep_addr = chan_in_word(chan_ep0_proxy);
+                    XUD_ClearStallByAddr(ep_addr);
+                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                }
+                else if(cmd == e_hal_set_device_addr)
+                {
+                    int8_t addr = chan_in_byte(chan_ep0_proxy);
+                    XUD_HAL_SetDeviceAddress(addr);
+                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                }
+                else if(cmd == e_reset_ep_state_by_addr)
+                {
+                    unsigned int ep_addr = (unsigned int)chan_in_byte(chan_ep0_proxy);
+                    XUD_ResetEpStateByAddr(ep_addr);
+                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                }
+                else if(cmd == e_set_stall)
+                {
+                    XUD_SetStall(ep0_out);
+                    XUD_SetStall(ep0_in);
+                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                }
+                else if(cmd == e_reset_endpoint)
+                {
+                    usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+                    //printintln(usbBusSpeed);
+
+                    chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
+                }
+                else if(cmd == e_set_test_mode)
+                {
+                    unsigned test_mode = chan_in_word(chan_ep0_proxy);
+                    XUD_SetTestMode(ep0_out, test_mode);
+                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                }
+                else if(e_sp_not_processed)
+                {
+
+                }
+            }
+            if(ep->resetting)
+            {
+                usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+            }
+
+            /* Store buffer address in EP structure */
+            ep->buffer = &sbuffer[0];
+            /* Mark EP as ready for SETUP data */
+            unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
+            *array_ptr_setup = (unsigned) ep;
+            triggerable_enable_trigger(chan_ep0_out);
+        }
+        continue;
+    }
+}
+
 DECLARE_JOB(hid_mouse, (chanend_t));
 /*
  * This function responds to the HID requests 
@@ -267,7 +478,7 @@ void Endpoint0_offtile(chanend_t chan_ep0_proxy)
 {
     USB_SetupPacket_t sp;
     unsigned bmRequestType;
-    XUD_BusSpeed_t usbBusSpeed;
+    XUD_BusSpeed_t usbBusSpeed = 2;
     while(1)
     {
         chan_in_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
@@ -366,78 +577,6 @@ void Endpoint0_offtile(chanend_t chan_ep0_proxy)
 
 }
 
-typedef struct isr_data_t {    
-    chanend_t c_test_int;
-    uint8_t trigger_enabled;
-} isr_data_t;
-
-isr_data_t app_data;
-
-DEFINE_INTERRUPT_CALLBACK(test_isr_grp, test_isr, app_data)
-{
-    isr_data_t *isr_data = app_data;
-    triggerable_disable_trigger(isr_data->c_test_int);
-    uint8_t temp = chan_in_byte(isr_data->c_test_int);
-    //printstrln("***in test_isr***");
-    //printintln(temp);
-    chan_out_byte(isr_data->c_test_int, 100);
-    isr_data->trigger_enabled = 0;
-}
-
-DECLARE_JOB(INTERRUPT_PERMITTED(Interrupt_permitted_task), (chanend_t));
-DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Interrupt_permitted_task, chanend_t c_interrupt)
-{
-    app_data.c_test_int = c_interrupt;
-    app_data.trigger_enabled = 1;
-    triggerable_setup_interrupt_callback(c_interrupt, &app_data, INTERRUPT_CALLBACK(test_isr));
-    //triggerable_enable_trigger(c_interrupt);
-    interrupt_unmask_all();
-    lock_t l = lock_alloc();
-    while(1)
-    {
-        //printintln(app_data.trigger_enabled);
-        lock_acquire(l);
-        if(!app_data.trigger_enabled)
-        {  
-            //printstrln("Found interrupt disabled");        
-            app_data.trigger_enabled = 1;
-            //printstrln("Enabling interrupt again");
-            triggerable_enable_trigger(c_interrupt);
-        }
-        lock_release(l);
-
-    }
-    return;
-}
-
-DECLARE_JOB(interrupt_trigger_task, (chanend_t))
-void interrupt_trigger_task(chanend_t c_test_interrupt)
-{
-    hwtimer_t t = hwtimer_alloc();
-    unsigned long now = hwtimer_get_time(t);
-
-    hwtimer_set_trigger_time(t,
-        now + 10000000);
-
-    SELECT_RES(
-        CASE_THEN(t, timer_handler))
-    {
-        timer_handler:
-            now = hwtimer_get_time(t);
-            hwtimer_change_trigger_time(t,
-            now + 10000000);
-            //printf("Timer handler at time: %lu\n", now);
-            chan_out_byte(c_test_interrupt, 44);
-            //printstrln("here 1");
-            uint8_t temp = chan_in_byte(c_test_interrupt);
-            //printstrln("here 2");
-            //printintln(temp);
-            continue;
-    }
-
-  hwtimer_free(t);
-}
-
 int main_tile0(chanend_t c_intertile)
 {
     channel_t channel_ep_out[EP_COUNT_OUT];
@@ -447,11 +586,6 @@ int main_tile0(chanend_t c_intertile)
     c_ep0_proxy = chanend_alloc();
     chanend_set_dest(c_ep0_proxy, chan_in_word(c_intertile));
     chan_out_word(c_intertile, c_ep0_proxy);
-
-    chanend_t c_test_interrupt;
-    c_test_interrupt = chanend_alloc();
-    chanend_set_dest(c_test_interrupt, chan_in_word(c_intertile));
-    chan_out_word(c_intertile, c_test_interrupt);
 
     for(int i = 0; i < sizeof(channel_ep_out) / sizeof(*channel_ep_out); ++i) {
         channel_ep_out[i] = chan_alloc();
@@ -472,9 +606,9 @@ int main_tile0(chanend_t c_intertile)
 
     PAR_JOBS(
         PJOB(_XUD_Main, (c_ep_out, EP_COUNT_OUT, c_ep_in, EP_COUNT_IN, 0, epTypeTableOut, epTypeTableIn, XUD_SPEED_HS, XUD_PWR_BUS)),
-        PJOB(Endpoint0_proxy, (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
-        PJOB(hid_mouse, (channel_ep_in[1].end_b)),
-        PJOB(interrupt_trigger_task, (c_test_interrupt))
+        PJOB(INTERRUPT_PERMITTED(Endpoint0_proxy_isr), (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
+        //PJOB(Endpoint0_proxy_no_isr, (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
+        PJOB(hid_mouse, (channel_ep_in[1].end_b))
     );
 
     return 0;
@@ -487,14 +621,8 @@ int main_tile1(chanend_t c_intertile)
     chan_out_word(c_intertile, c_ep0_proxy);
     chanend_set_dest(c_ep0_proxy, chan_in_word(c_intertile));
 
-    chanend_t c_test_interrupt;
-    c_test_interrupt = chanend_alloc();
-    chan_out_word(c_intertile, c_test_interrupt);
-    chanend_set_dest(c_test_interrupt, chan_in_word(c_intertile));
-
     PAR_JOBS(
-        PJOB(Endpoint0_offtile, (c_ep0_proxy)),
-        PJOB(INTERRUPT_PERMITTED(Interrupt_permitted_task), (c_test_interrupt))
+        PJOB(Endpoint0_offtile, (c_ep0_proxy))
     );
 
     return 0;
