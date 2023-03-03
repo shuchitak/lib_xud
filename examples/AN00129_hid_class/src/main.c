@@ -246,15 +246,7 @@ DEFINE_INTERRUPT_CALLBACK(test_isr_grp, test_ep0_isr, app_data)
     triggerable_disable_trigger(isr_data->chan_ep0_out);
 
     isr_data->result = XUD_GetSetupBuffer_quick(isr_data->ep0_out);
-    if(isr_data->result != XUD_RES_OKAY)
-    {
-        s_chan_out_byte(isr_data->c_notify, 1);
-    }
-    else{
-        volatile XUD_ep_info *ep = (XUD_ep_info*) isr_data->ep0_out;
-        USB_ParseSetupPacket(ep->buffer, &isr_data->sp);
-        s_chan_out_byte(isr_data->c_notify, 1);
-    }
+    s_chan_out_byte(isr_data->c_notify, 1);
 }
 
 DECLARE_JOB(INTERRUPT_PERMITTED(Endpoint0_proxy_isr), (chanend_t, chanend_t, chanend_t));
@@ -296,7 +288,7 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
     }
 
     /* Store buffer address in EP structure */
-    ep->buffer = &sbuffer[0];
+    ep->buffer = (volatile unsigned int)&sbuffer[0];
     /* Mark EP as ready for SETUP data */
     unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
     *array_ptr_setup = (unsigned) ep;
@@ -311,6 +303,10 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
         event_setup_notify:
         {
             uint8_t temp = s_chan_in_byte(c_notify.end_b);
+            if(ep0_app_data.result == XUD_RES_OKAY)
+            {
+                USB_ParseSetupPacket((unsigned char *)ep->buffer, &ep0_app_data.sp);
+            }
             chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&ep0_app_data.sp, sizeof(USB_SetupPacket_t));
             chan_out_word(chan_ep0_proxy, ep0_app_data.result);
             // Wait for offtile EP0 to communicate
@@ -389,7 +385,7 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
             }
 
             /* Store buffer address in EP structure */
-            ep->buffer = &sbuffer[0];
+            ep->buffer = (volatile unsigned int)&sbuffer[0];
             /* Mark EP as ready for SETUP data */
             unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
             *array_ptr_setup = (unsigned) ep;
