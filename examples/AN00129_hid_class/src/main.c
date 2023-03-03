@@ -373,24 +373,24 @@ typedef struct isr_data_t {
 
 isr_data_t app_data;
 
-DEFINE_INTERRUPT_CALLBACK(ep0_isr_grp, ep0_setup_packet_isr, app_data)
+DEFINE_INTERRUPT_CALLBACK(test_isr_grp, test_isr, app_data)
 {
     isr_data_t *isr_data = app_data;
     triggerable_disable_trigger(isr_data->c_test_int);
     uint8_t temp = chan_in_byte(isr_data->c_test_int);
-    //printstrln("***in ep0_setup_packet_isr***");
+    //printstrln("***in test_isr***");
     //printintln(temp);
     chan_out_byte(isr_data->c_test_int, 100);
     isr_data->trigger_enabled = 0;
 }
 
 DECLARE_JOB(INTERRUPT_PERMITTED(Interrupt_permitted_task), (chanend_t));
-DEFINE_INTERRUPT_PERMITTED (ep0_isr_grp, void, Interrupt_permitted_task, chanend_t c_interrupt)
+DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Interrupt_permitted_task, chanend_t c_interrupt)
 {
     app_data.c_test_int = c_interrupt;
     app_data.trigger_enabled = 1;
-    triggerable_setup_interrupt_callback(c_interrupt, &app_data, INTERRUPT_CALLBACK(ep0_setup_packet_isr));
-    triggerable_enable_trigger(c_interrupt);
+    triggerable_setup_interrupt_callback(c_interrupt, &app_data, INTERRUPT_CALLBACK(test_isr));
+    //triggerable_enable_trigger(c_interrupt);
     interrupt_unmask_all();
     lock_t l = lock_alloc();
     while(1)
@@ -402,7 +402,6 @@ DEFINE_INTERRUPT_PERMITTED (ep0_isr_grp, void, Interrupt_permitted_task, chanend
             //printstrln("Found interrupt disabled");        
             app_data.trigger_enabled = 1;
             //printstrln("Enabling interrupt again");
-            //triggerable_setup_interrupt_callback(c_interrupt, &app_data, INTERRUPT_CALLBACK(ep0_setup_packet_isr));
             triggerable_enable_trigger(c_interrupt);
         }
         lock_release(l);
