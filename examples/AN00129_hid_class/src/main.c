@@ -550,68 +550,6 @@ void hid_mouse_non_blocking(chanend_t chan_ep_hid)
 }
 
 
-DECLARE_JOB(hid_mouse, (chanend_t));
-/*
- * This function responds to the HID requests 
- * - It draws a square using the mouse moving 40 pixels in each direction
- * - The sequence repeats every 500 requests.
- */
-void hid_mouse(chanend_t chan_ep_hid)
-{
-    unsigned int counter = 0;
-    enum {RIGHT, DOWN, LEFT, UP} state = RIGHT;
-    
-    printf("hid_mouse: %x\n", chan_ep_hid);
-    XUD_ep ep_hid = XUD_InitEp(chan_ep_hid);
-
-    for(;;)
-    {
-        /* Move the pointer around in a square (relative) */
-        if(counter++ >= 500)
-        {
-            int x=0;
-            int y=0;
-
-            switch(state) {
-            case RIGHT:
-                x = 40;
-                y = 0;
-                state = DOWN;
-                break;
-
-            case DOWN:
-                x = 0;
-                y = 40;
-                state = LEFT;
-                break;
-
-            case LEFT:
-                x = -40;
-                y = 0;
-                state = UP;
-                break;
-
-            case UP:
-            default:
-                x = 0;
-                y = -40;
-                state = RIGHT;
-                break;
-            }
-
-            /* Unsafe region so we can use shared memory. */
-                /* global buffer 'g_reportBuffer' defined in hid_defs.h */
-                g_reportBuffer[1] = x;
-                g_reportBuffer[2] = y;
-
-                /* Send the buffer off to the host.  Note this will return when complete */
-                XUD_SetBuffer(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
-                counter = 0;
-        }
-    }
-}
-
-
 DECLARE_JOB(_XUD_Main, (chanend_t*, int, chanend_t*, int, chanend_t, XUD_EpType*, XUD_EpType*, XUD_BusSpeed_t, XUD_PwrConfig));
 void _XUD_Main(chanend_t *c_epOut, int noEpOut, chanend_t *c_epIn, int noEpIn, chanend_t c_sof, XUD_EpType *epTypeTableOut, XUD_EpType *epTypeTableIn, XUD_BusSpeed_t desiredSpeed, XUD_PwrConfig pwrConfig)
 {
