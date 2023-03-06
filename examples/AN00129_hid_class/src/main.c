@@ -245,8 +245,11 @@ DEFINE_INTERRUPT_CALLBACK(test_isr_grp, test_ep0_isr, app_data)
     s_chan_out_byte(isr_data->c_notify, 1);
 }
 
-DECLARE_JOB(INTERRUPT_PERMITTED(Endpoint0_proxy_isr), (chanend_t, chanend_t, chanend_t));
-DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy)
+extern XUD_Result_t XUD_SetBuffer_Start(XUD_ep e, unsigned char buffer[], unsigned datalength);
+extern XUD_Result_t XUD_SetBuffer_Finish(chanend c, XUD_ep e);
+
+DECLARE_JOB(INTERRUPT_PERMITTED(Endpoint0_proxy_hid_mouse), (chanend_t, chanend_t, chanend_t, chanend_t));
+DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_hid_mouse, chanend_t chan_ep0_out, chanend_t chan_ep0_in, chanend_t chan_ep0_proxy, chanend_t chan_ep_hid)
 /* Endpoint 0 Task */
 {
     ep0_app_data.chan_ep0_out = chan_ep0_out;
@@ -285,6 +288,10 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
 
     unsigned int counter = 0;
     volatile unsigned setup_packet_done = 0;
+    enum {RIGHT, DOWN, LEFT, UP} state = RIGHT;
+
+    XUD_ep ep_hid = XUD_InitEp(chan_ep_hid);
+    volatile unsigned hid_report_set_buffer_start = 0;
 
     triggerable_enable_trigger(chan_ep0_out);
     interrupt_unmask_all();
@@ -292,9 +299,17 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
     SELECT_RES(
         CASE_THEN(c_notify.end_b, event_setup_notify),
         CASE_THEN(chan_ep0_proxy, event_ep0_proxy),
+        CASE_THEN(chan_ep_hid, event_ep_hid),
         DEFAULT_THEN(default_handler)
     )
     {
+        event_ep_hid:
+        {
+            XUD_SetBuffer_Finish(chan_ep_hid, ep_hid);
+            hid_report_set_buffer_start = 0;
+        }
+        continue;
+
         event_ep0_proxy:
         {
             XUD_Result_t result;
@@ -383,10 +398,6 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
 
         default_handler:
         {
-            if(counter++ > 500)
-            {
-                counter = 0;
-            }
             if(ep->resetting)
             {
                 usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
@@ -401,74 +412,62 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
                 triggerable_enable_trigger(chan_ep0_out);
                 setup_packet_done = 0;
             }
-        }
-        continue;
-    }
-}
 
-DECLARE_JOB(hid_mouse, (chanend_t));
-/*
- * This function responds to the HID requests 
- * - It draws a square using the mouse moving 40 pixels in each direction
- * - The sequence repeats every 500 requests.
- */
-void hid_mouse(chanend_t chan_ep_hid)
-{
-    unsigned int counter = 0;
-    enum {RIGHT, DOWN, LEFT, UP} state = RIGHT;
-    
-    printf("hid_mouse: %x\n", chan_ep_hid);
-    XUD_ep ep_hid = XUD_InitEp(chan_ep_hid);
+            if(!hid_report_set_buffer_start && counter++ >= 500) // HID report
+            {
+                /* Move the pointer around in a square (relative) */
+                int x=0;
+                int y=0;
 
-    for(;;)
-    {
-        /* Move the pointer around in a square (relative) */
-        if(counter++ >= 500)
-        {
-            int x=0;
-            int y=0;
+                switch(state) {
+                case RIGHT:
+                    x = 40;
+                    y = 0;
+                    state = DOWN;
+                    break;
 
-            switch(state) {
-            case RIGHT:
-                x = 40;
-                y = 0;
-                state = DOWN;
-                break;
+                case DOWN:
+                    x = 0;
+                    y = 40;
+                    state = LEFT;
+                    break;
 
-            case DOWN:
-                x = 0;
-                y = 40;
-                state = LEFT;
-                break;
+                case LEFT:
+                    x = -40;
+                    y = 0;
+                    state = UP;
+                    break;
 
-            case LEFT:
-                x = -40;
-                y = 0;
-                state = UP;
-                break;
+                case UP:
+                default:
+                    x = 0;
+                    y = -40;
+                    state = RIGHT;
+                    break;
+                }
 
-            case UP:
-            default:
-                x = 0;
-                y = -40;
-                state = RIGHT;
-                break;
-            }
-
-            /* Unsafe region so we can use shared memory. */
+                /* Unsafe region so we can use shared memory. */
                 /* global buffer 'g_reportBuffer' defined in hid_defs.h */
                 g_reportBuffer[1] = x;
                 g_reportBuffer[2] = y;
 
                 /* Send the buffer off to the host.  Note this will return when complete */
-                XUD_SetBuffer(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
+                //XUD_SetBuffer(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
+                XUD_Result_t result = XUD_SetBuffer_Start(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
+
+                if(result == XUD_RES_OKAY)
+                {
+                    hid_report_set_buffer_start = 1;
+                }
                 counter = 0;
+            }
         }
+        continue;
     }
 }
 
-extern XUD_Result_t XUD_SetBuffer_Start(XUD_ep e, unsigned char buffer[], unsigned datalength);
-extern XUD_Result_t XUD_SetBuffer_Finish(chanend c, XUD_ep e);
+
+
 
 DECLARE_JOB(hid_mouse_non_blocking, (chanend_t));
 void hid_mouse_non_blocking(chanend_t chan_ep_hid)
@@ -549,6 +548,69 @@ void hid_mouse_non_blocking(chanend_t chan_ep_hid)
         continue;
     }
 }
+
+
+DECLARE_JOB(hid_mouse, (chanend_t));
+/*
+ * This function responds to the HID requests 
+ * - It draws a square using the mouse moving 40 pixels in each direction
+ * - The sequence repeats every 500 requests.
+ */
+void hid_mouse(chanend_t chan_ep_hid)
+{
+    unsigned int counter = 0;
+    enum {RIGHT, DOWN, LEFT, UP} state = RIGHT;
+    
+    printf("hid_mouse: %x\n", chan_ep_hid);
+    XUD_ep ep_hid = XUD_InitEp(chan_ep_hid);
+
+    for(;;)
+    {
+        /* Move the pointer around in a square (relative) */
+        if(counter++ >= 500)
+        {
+            int x=0;
+            int y=0;
+
+            switch(state) {
+            case RIGHT:
+                x = 40;
+                y = 0;
+                state = DOWN;
+                break;
+
+            case DOWN:
+                x = 0;
+                y = 40;
+                state = LEFT;
+                break;
+
+            case LEFT:
+                x = -40;
+                y = 0;
+                state = UP;
+                break;
+
+            case UP:
+            default:
+                x = 0;
+                y = -40;
+                state = RIGHT;
+                break;
+            }
+
+            /* Unsafe region so we can use shared memory. */
+                /* global buffer 'g_reportBuffer' defined in hid_defs.h */
+                g_reportBuffer[1] = x;
+                g_reportBuffer[2] = y;
+
+                /* Send the buffer off to the host.  Note this will return when complete */
+                XUD_SetBuffer(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
+                counter = 0;
+        }
+    }
+}
+
 
 DECLARE_JOB(_XUD_Main, (chanend_t*, int, chanend_t*, int, chanend_t, XUD_EpType*, XUD_EpType*, XUD_BusSpeed_t, XUD_PwrConfig));
 void _XUD_Main(chanend_t *c_epOut, int noEpOut, chanend_t *c_epIn, int noEpIn, chanend_t c_sof, XUD_EpType *epTypeTableOut, XUD_EpType *epTypeTableIn, XUD_BusSpeed_t desiredSpeed, XUD_PwrConfig pwrConfig)
@@ -696,9 +758,9 @@ int main_tile0(chanend_t c_intertile)
 
     PAR_JOBS(
         PJOB(_XUD_Main, (c_ep_out, EP_COUNT_OUT, c_ep_in, EP_COUNT_IN, 0, epTypeTableOut, epTypeTableIn, XUD_SPEED_HS, XUD_PWR_BUS)),
-        PJOB(INTERRUPT_PERMITTED(Endpoint0_proxy_isr), (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
+        PJOB(INTERRUPT_PERMITTED(Endpoint0_proxy_hid_mouse), (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy, channel_ep_in[1].end_b))
         //PJOB(Endpoint0_proxy_no_isr, (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
-        PJOB(hid_mouse_non_blocking, (channel_ep_in[1].end_b))
+        //PJOB(hid_mouse_non_blocking, (channel_ep_in[1].end_b))
     );
 
     return 0;
