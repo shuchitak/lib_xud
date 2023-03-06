@@ -284,17 +284,92 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
     *array_ptr_setup = (unsigned) ep;
 
     unsigned int counter = 0;
+    volatile unsigned setup_packet_done = 0;
 
     triggerable_enable_trigger(chan_ep0_out);
     interrupt_unmask_all();
 
     SELECT_RES(
         CASE_THEN(c_notify.end_b, event_setup_notify),
+        CASE_THEN(chan_ep0_proxy, event_ep0_proxy),
         DEFAULT_THEN(default_handler)
     )
     {
-        event_setup_notify:
+        event_ep0_proxy:
         {
+            XUD_Result_t result;
+            cmd = chan_in_byte(chan_ep0_proxy);
+            if(cmd == ep_sp_pkt_done)
+            {
+                result = chan_in_byte(chan_ep0_proxy);
+                setup_packet_done = 1;
+                //break;
+            }
+            else if(cmd == e_do_get_request)
+            {
+                len = chan_in_byte(chan_ep0_proxy);
+                chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
+                result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, sp.wLength);
+                chan_out_byte(chan_ep0_proxy, result);
+            }
+            else if(cmd == e_set_req_status)
+            {
+                result = XUD_DoSetRequestStatus(ep0_in);
+                chan_out_byte(chan_ep0_proxy, result);
+            }
+            else if(cmd == e_set_stall_by_addr)
+            {
+                int ep_addr = chan_in_word(chan_ep0_proxy);
+                XUD_SetStallByAddr(ep_addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_clear_stall_by_addr)
+            {
+                int ep_addr = chan_in_word(chan_ep0_proxy);
+                XUD_ClearStallByAddr(ep_addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_hal_set_device_addr)
+            {
+                int8_t addr = chan_in_byte(chan_ep0_proxy);
+                XUD_HAL_SetDeviceAddress(addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_reset_ep_state_by_addr)
+            {
+                unsigned int ep_addr = (unsigned int)chan_in_byte(chan_ep0_proxy);
+                XUD_ResetEpStateByAddr(ep_addr);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_set_stall)
+            {
+                XUD_SetStall(ep0_out);
+                XUD_SetStall(ep0_in);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(cmd == e_reset_endpoint)
+            {
+                usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+                //printintln(usbBusSpeed);
+
+                chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
+            }
+            else if(cmd == e_set_test_mode)
+            {
+                unsigned test_mode = chan_in_word(chan_ep0_proxy);
+                XUD_SetTestMode(ep0_out, test_mode);
+                chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+            }
+            else if(e_sp_not_processed)
+            {
+
+            }
+        }
+        continue;
+        
+        event_setup_notify: // test_ep0_isr notifying a setup packet receive
+        {
+            setup_packet_done = 0;
             uint8_t temp = s_chan_in_byte(c_notify.end_b);
             if(ep0_app_data.result == XUD_RES_OKAY)
             {
@@ -303,93 +378,6 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
             chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
             chan_out_word(chan_ep0_proxy, ep0_app_data.result);
             // Wait for offtile EP0 to communicate
-
-            SELECT_RES(
-                CASE_THEN(chan_ep0_proxy, event_ep0_proxy)
-            )
-            {
-                event_ep0_proxy:
-                {
-                    XUD_Result_t result;
-                    cmd = chan_in_byte(chan_ep0_proxy);
-                    if(cmd == ep_sp_pkt_done)
-                    {
-                        result = chan_in_byte(chan_ep0_proxy);
-                        break;
-                    }
-                    else if(cmd == e_do_get_request)
-                    {
-                        len = chan_in_byte(chan_ep0_proxy);
-                        chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
-                        result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, sp.wLength);
-                        chan_out_byte(chan_ep0_proxy, result);
-                    }
-                    else if(cmd == e_set_req_status)
-                    {
-                        result = XUD_DoSetRequestStatus(ep0_in);
-                        chan_out_byte(chan_ep0_proxy, result);
-                    }
-                    else if(cmd == e_set_stall_by_addr)
-                    {
-                        int ep_addr = chan_in_word(chan_ep0_proxy);
-                        XUD_SetStallByAddr(ep_addr);
-                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                    }
-                    else if(cmd == e_clear_stall_by_addr)
-                    {
-                        int ep_addr = chan_in_word(chan_ep0_proxy);
-                        XUD_ClearStallByAddr(ep_addr);
-                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                    }
-                    else if(cmd == e_hal_set_device_addr)
-                    {
-                        int8_t addr = chan_in_byte(chan_ep0_proxy);
-                        XUD_HAL_SetDeviceAddress(addr);
-                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                    }
-                    else if(cmd == e_reset_ep_state_by_addr)
-                    {
-                        unsigned int ep_addr = (unsigned int)chan_in_byte(chan_ep0_proxy);
-                        XUD_ResetEpStateByAddr(ep_addr);
-                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                    }
-                    else if(cmd == e_set_stall)
-                    {
-                        XUD_SetStall(ep0_out);
-                        XUD_SetStall(ep0_in);
-                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                    }
-                    else if(cmd == e_reset_endpoint)
-                    {
-                        usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
-                        //printintln(usbBusSpeed);
-
-                        chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
-                    }
-                    else if(cmd == e_set_test_mode)
-                    {
-                        unsigned test_mode = chan_in_word(chan_ep0_proxy);
-                        XUD_SetTestMode(ep0_out, test_mode);
-                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                    }
-                    else if(e_sp_not_processed)
-                    {
-
-                    }
-                }
-                continue;
-            }
-            if(ep->resetting)
-            {
-                usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
-            }
-
-            /* Store buffer address in EP structure */
-            ep->buffer = (volatile unsigned int)&sbuffer[0];
-            /* Mark EP as ready for SETUP data */
-            unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
-            *array_ptr_setup = (unsigned) ep;
-            triggerable_enable_trigger(chan_ep0_out);
         }
         continue;
 
@@ -398,6 +386,20 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
             if(counter++ > 500)
             {
                 counter = 0;
+            }
+            if(ep->resetting)
+            {
+                usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+            }
+            if(setup_packet_done) // EP0 Setup packet processing completed offtile
+            {
+                /* Store buffer address in EP structure */
+                ep->buffer = (volatile unsigned int)&sbuffer[0];
+                /* Mark EP as ready for SETUP data */
+                unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
+                *array_ptr_setup = (unsigned) ep;
+                triggerable_enable_trigger(chan_ep0_out);
+                setup_packet_done = 0;
             }
         }
         continue;
@@ -462,6 +464,89 @@ void hid_mouse(chanend_t chan_ep_hid)
                 XUD_SetBuffer(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
                 counter = 0;
         }
+    }
+}
+
+extern XUD_Result_t XUD_SetBuffer_Start(XUD_ep e, unsigned char buffer[], unsigned datalength);
+extern XUD_Result_t XUD_SetBuffer_Finish(chanend c, XUD_ep e);
+
+DECLARE_JOB(hid_mouse_non_blocking, (chanend_t));
+void hid_mouse_non_blocking(chanend_t chan_ep_hid)
+{
+    unsigned int counter = 0;
+    enum {RIGHT, DOWN, LEFT, UP} state = RIGHT;
+    
+    printf("hid_mouse: %x\n", chan_ep_hid);
+    XUD_ep ep_hid = XUD_InitEp(chan_ep_hid);
+    volatile unsigned hid_report_set_buffer_start = 0;
+
+    SELECT_RES(
+        CASE_THEN(chan_ep_hid, event_ep_hid),
+        DEFAULT_THEN(default_handler)
+    )
+    {
+        event_ep_hid:
+        {
+            XUD_SetBuffer_Finish(chan_ep_hid, ep_hid);
+            hid_report_set_buffer_start = 0;
+        }
+        continue;
+
+        default_handler:
+        {
+            if(!hid_report_set_buffer_start)
+            {
+            /* Move the pointer around in a square (relative) */
+            if(counter++ >= 500)
+            {
+                int x=0;
+                int y=0;
+
+                switch(state) {
+                case RIGHT:
+                    x = 40;
+                    y = 0;
+                    state = DOWN;
+                    break;
+
+                case DOWN:
+                    x = 0;
+                    y = 40;
+                    state = LEFT;
+                    break;
+
+                case LEFT:
+                    x = -40;
+                    y = 0;
+                    state = UP;
+                    break;
+
+                case UP:
+                default:
+                    x = 0;
+                    y = -40;
+                    state = RIGHT;
+                    break;
+                }
+
+                /* Unsafe region so we can use shared memory. */
+                /* global buffer 'g_reportBuffer' defined in hid_defs.h */
+                g_reportBuffer[1] = x;
+                g_reportBuffer[2] = y;
+
+                /* Send the buffer off to the host.  Note this will return when complete */
+                //XUD_SetBuffer(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
+                XUD_Result_t result = XUD_SetBuffer_Start(ep_hid, (void*)g_reportBuffer, sizeof(g_reportBuffer));
+
+                if(result == XUD_RES_OKAY)
+                {
+                    hid_report_set_buffer_start = 1;
+                }
+                counter = 0;
+            }
+            }
+        }
+        continue;
     }
 }
 
@@ -613,7 +698,7 @@ int main_tile0(chanend_t c_intertile)
         PJOB(_XUD_Main, (c_ep_out, EP_COUNT_OUT, c_ep_in, EP_COUNT_IN, 0, epTypeTableOut, epTypeTableIn, XUD_SPEED_HS, XUD_PWR_BUS)),
         PJOB(INTERRUPT_PERMITTED(Endpoint0_proxy_isr), (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
         //PJOB(Endpoint0_proxy_no_isr, (channel_ep_out[0].end_b, channel_ep_in[0].end_b, c_ep0_proxy)),
-        PJOB(hid_mouse, (channel_ep_in[1].end_b))
+        PJOB(hid_mouse_non_blocking, (channel_ep_in[1].end_b))
     );
 
     return 0;
