@@ -229,13 +229,9 @@ typedef struct {
     chanend_t chan_ep0_out;
     chanend_t chan_ep0_in;
     chanend_t c_notify;
-    uint8_t trigger_enabled;
-    uint8_t setup_pkt_received;
-    USB_SetupPacket_t sp;
     XUD_Result_t result;
     XUD_ep ep0_out;
     XUD_ep ep0_in;
-    XUD_BusSpeed_t usbBusSpeed;
 } ep0_isr_data_t;
 
 ep0_isr_data_t ep0_app_data;
@@ -255,15 +251,13 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
 {
     ep0_app_data.chan_ep0_out = chan_ep0_out;
     ep0_app_data.chan_ep0_in = chan_ep0_in;
-    ep0_app_data.trigger_enabled = 1;
-    ep0_app_data.setup_pkt_received = 0;
 
     streaming_channel_t c_notify;
     c_notify = chan_alloc();
     ep0_app_data.c_notify = c_notify.end_a;
 
     triggerable_setup_interrupt_callback(chan_ep0_out, &ep0_app_data, INTERRUPT_CALLBACK(test_ep0_isr));
-    //USB_SetupPacket_t sp;
+    USB_SetupPacket_t sp;
 
     XUD_BusSpeed_t usbBusSpeed;
 
@@ -282,10 +276,6 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
     unsigned char sbuffer[120];
 
     volatile XUD_ep_info *ep = (XUD_ep_info*) ep0_app_data.ep0_out;
-    if(ep->resetting)
-    {
-        usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
-    }
 
     /* Store buffer address in EP structure */
     ep->buffer = (volatile unsigned int)&sbuffer[0];
@@ -293,11 +283,14 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
     unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
     *array_ptr_setup = (unsigned) ep;
 
+    unsigned int counter = 0;
+
     triggerable_enable_trigger(chan_ep0_out);
     interrupt_unmask_all();
 
     SELECT_RES(
-        CASE_THEN(c_notify.end_b, event_setup_notify)
+        CASE_THEN(c_notify.end_b, event_setup_notify),
+        DEFAULT_THEN(default_handler)
     )
     {
         event_setup_notify:
@@ -305,79 +298,86 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
             uint8_t temp = s_chan_in_byte(c_notify.end_b);
             if(ep0_app_data.result == XUD_RES_OKAY)
             {
-                USB_ParseSetupPacket((unsigned char *)ep->buffer, &ep0_app_data.sp);
+                USB_ParseSetupPacket((unsigned char *)ep->buffer, &sp);
             }
-            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&ep0_app_data.sp, sizeof(USB_SetupPacket_t));
+            chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
             chan_out_word(chan_ep0_proxy, ep0_app_data.result);
             // Wait for offtile EP0 to communicate
-            while(1)
+
+            SELECT_RES(
+                CASE_THEN(chan_ep0_proxy, event_ep0_proxy)
+            )
             {
-                XUD_Result_t result;
-                cmd = chan_in_byte(chan_ep0_proxy);
-                if(cmd == ep_sp_pkt_done)
+                event_ep0_proxy:
                 {
-                    result = chan_in_byte(chan_ep0_proxy);
-                    break;
-                }
-                else if(cmd == e_do_get_request)
-                {
-                    len = chan_in_byte(chan_ep0_proxy);
-                    chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
-                    result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, ep0_app_data.sp.wLength);
-                    chan_out_byte(chan_ep0_proxy, result);
-                }
-                else if(cmd == e_set_req_status)
-                {
-                    result = XUD_DoSetRequestStatus(ep0_in);
-                    chan_out_byte(chan_ep0_proxy, result);
-                }
-                else if(cmd == e_set_stall_by_addr)
-                {
-                    int ep_addr = chan_in_word(chan_ep0_proxy);
-                    XUD_SetStallByAddr(ep_addr);
-                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                }
-                else if(cmd == e_clear_stall_by_addr)
-                {
-                    int ep_addr = chan_in_word(chan_ep0_proxy);
-                    XUD_ClearStallByAddr(ep_addr);
-                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                }
-                else if(cmd == e_hal_set_device_addr)
-                {
-                    int8_t addr = chan_in_byte(chan_ep0_proxy);
-                    XUD_HAL_SetDeviceAddress(addr);
-                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                }
-                else if(cmd == e_reset_ep_state_by_addr)
-                {
-                    unsigned int ep_addr = (unsigned int)chan_in_byte(chan_ep0_proxy);
-                    XUD_ResetEpStateByAddr(ep_addr);
-                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                }
-                else if(cmd == e_set_stall)
-                {
-                    XUD_SetStall(ep0_out);
-                    XUD_SetStall(ep0_in);
-                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                }
-                else if(cmd == e_reset_endpoint)
-                {
-                    usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
-                    //printintln(usbBusSpeed);
+                    XUD_Result_t result;
+                    cmd = chan_in_byte(chan_ep0_proxy);
+                    if(cmd == ep_sp_pkt_done)
+                    {
+                        result = chan_in_byte(chan_ep0_proxy);
+                        break;
+                    }
+                    else if(cmd == e_do_get_request)
+                    {
+                        len = chan_in_byte(chan_ep0_proxy);
+                        chan_in_buf_byte(chan_ep0_proxy, ep0_proxy_buffer, len);
+                        result = XUD_DoGetRequest(ep0_out, ep0_in, ep0_proxy_buffer, len, sp.wLength);
+                        chan_out_byte(chan_ep0_proxy, result);
+                    }
+                    else if(cmd == e_set_req_status)
+                    {
+                        result = XUD_DoSetRequestStatus(ep0_in);
+                        chan_out_byte(chan_ep0_proxy, result);
+                    }
+                    else if(cmd == e_set_stall_by_addr)
+                    {
+                        int ep_addr = chan_in_word(chan_ep0_proxy);
+                        XUD_SetStallByAddr(ep_addr);
+                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                    }
+                    else if(cmd == e_clear_stall_by_addr)
+                    {
+                        int ep_addr = chan_in_word(chan_ep0_proxy);
+                        XUD_ClearStallByAddr(ep_addr);
+                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                    }
+                    else if(cmd == e_hal_set_device_addr)
+                    {
+                        int8_t addr = chan_in_byte(chan_ep0_proxy);
+                        XUD_HAL_SetDeviceAddress(addr);
+                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                    }
+                    else if(cmd == e_reset_ep_state_by_addr)
+                    {
+                        unsigned int ep_addr = (unsigned int)chan_in_byte(chan_ep0_proxy);
+                        XUD_ResetEpStateByAddr(ep_addr);
+                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                    }
+                    else if(cmd == e_set_stall)
+                    {
+                        XUD_SetStall(ep0_out);
+                        XUD_SetStall(ep0_in);
+                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                    }
+                    else if(cmd == e_reset_endpoint)
+                    {
+                        usbBusSpeed = XUD_ResetEndpoint(ep0_out, &ep0_in);
+                        //printintln(usbBusSpeed);
 
-                    chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
-                }
-                else if(cmd == e_set_test_mode)
-                {
-                    unsigned test_mode = chan_in_word(chan_ep0_proxy);
-                    XUD_SetTestMode(ep0_out, test_mode);
-                    chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
-                }
-                else if(e_sp_not_processed)
-                {
+                        chan_out_byte(chan_ep0_proxy, (uint8_t)usbBusSpeed);
+                    }
+                    else if(cmd == e_set_test_mode)
+                    {
+                        unsigned test_mode = chan_in_word(chan_ep0_proxy);
+                        XUD_SetTestMode(ep0_out, test_mode);
+                        chan_out_byte(chan_ep0_proxy, XUD_RES_OKAY);
+                    }
+                    else if(e_sp_not_processed)
+                    {
 
+                    }
                 }
+                continue;
             }
             if(ep->resetting)
             {
@@ -390,6 +390,15 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_isr, chanend_t c
             unsigned * array_ptr_setup = (unsigned *)ep->array_ptr_setup;
             *array_ptr_setup = (unsigned) ep;
             triggerable_enable_trigger(chan_ep0_out);
+        }
+        continue;
+
+        default_handler:
+        {
+            if(counter++ > 500)
+            {
+                counter = 0;
+            }
         }
         continue;
     }
