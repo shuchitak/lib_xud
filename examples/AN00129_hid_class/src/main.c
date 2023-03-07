@@ -297,7 +297,7 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_hid_mouse, chane
     interrupt_unmask_all();
 
     SELECT_RES(
-        CASE_THEN(c_notify.end_b, event_setup_notify),
+        CASE_THEN(c_notify.end_b, event_setup_packet_notify),
         CASE_THEN(chan_ep0_proxy, event_ep0_proxy),
         CASE_THEN(chan_ep_hid, event_ep_hid),
         DEFAULT_THEN(default_handler)
@@ -382,7 +382,7 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_hid_mouse, chane
         }
         continue;
         
-        event_setup_notify: // test_ep0_isr notifying a setup packet receive
+        event_setup_packet_notify: // test_ep0_isr notifying a setup packet receive
         {
             setup_packet_done = 0;
             uint8_t temp = s_chan_in_byte(c_notify.end_b);
@@ -392,7 +392,6 @@ DEFINE_INTERRUPT_PERMITTED (test_isr_grp, void, Endpoint0_proxy_hid_mouse, chane
             }
             chan_out_buf_byte(chan_ep0_proxy, (uint8_t*)&sp, sizeof(USB_SetupPacket_t));
             chan_out_word(chan_ep0_proxy, ep0_app_data.result);
-            // Wait for offtile EP0 to communicate
         }
         continue;
 
