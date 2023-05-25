@@ -51,6 +51,7 @@ Pid_Data0_RxData:
 Pid_Data1_RxData:
 Pid_Data2_RxData:
     {stw         r4, r3[6];         setsr 1}                    // Store PID into EP structure
+    stw          r4, dp[save_debug_reg]
 
 GotRxPid:
     {eeu        res[r8];            mkmsk r4, 32}               // Enable events on RxA
@@ -130,4 +131,3 @@ OutTail3:
     LDWSP_ru6   r11, sp[STACK_RXCRC_TAIL3]
     crc8        r6, r1, r2, r9                  // Use the fact the the bottom byte of port id is 0.. saves us an ldc
     {RETSP_u6   0;  ldc r1, 0}
-

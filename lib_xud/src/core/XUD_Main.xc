@@ -82,6 +82,8 @@ unsigned sentReset = 0;
 
 unsigned chanArray;
 
+int save_debug_reg = 0;
+
 #define RESET_TIME_us               (5)
 #define RESET_TIME                  (RESET_TIME_us * REF_CLK_FREQ)
 
@@ -616,5 +618,3 @@ int XUD_Manager(chanend c_epOut[], int noEpOut,
 {
     return XUD_Main(c_epOut, noEpOut, c_epIn, noEpIn, c_sof, epTypeTableOut, epTypeTableIn, desiredSpeed, pwrConfig); //NOCOVER
 }
-
-

@@ -37,6 +37,7 @@ DoOutNonIso:
     {clre;     eq         r11, r6, r11}         // Check for good CRC16
 
 doRXDataReturn_NonIso:
+    ecallf     r11
     bf         r11, NextTokenAfterOut           // Check for bad crc
 
     ldc        r11, USB_PIDn_ACK                // Data CRC good, EP not Iso, and EP not halted: Send Ack
@@ -99,6 +100,3 @@ PrimaryBufferFull_NoNak:
   //clre
   //bl	ERR_OutDataTimeout
   //bu        NextToken
-
-
-
