@@ -45,6 +45,10 @@ enum USB_DescriptorTypes_t
     USB_DESCTYPE_OTG                    = 0x09,
     USB_DESCTYPE_DEBUG                  = 0x0A,
     USB_DESCTYPE_INTERFACE_ASSOCIATION  = 0x0B, /* Interface association descriptor */
+    USB_DESCTYPE_BOS                    = 0x0F,
+    USB_DESCTYPE_DEVICE_CAPABILITY      = 0x10,
+
+    USB_DESCTYPE_FUNCTIONAL             = 0x21,
 };
 
 #ifdef __STDC__

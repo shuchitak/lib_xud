@@ -60,6 +60,9 @@
                                             (USB_BM_REQTYPE_TYPE_VENDOR << 5) | \
                                             (USB_BM_REQTYPE_RECIP_DEV))
 
+#define USB_BMREQ_H2D_VENDOR_INT          ((USB_BM_REQTYPE_DIRECTION_H2D << 7) | \
+                                            (USB_BM_REQTYPE_TYPE_VENDOR << 5) | \
+                                            (USB_BM_REQTYPE_RECIP_INTER))
 /* Table 9-4. Standard Request Codes */
 /* bRequest */
 #define USB_GET_STATUS                  0x00
